@@ -25,7 +25,7 @@ go get github.com/treeforest/smartpagelist
 ```go
 import (
     "fmt"
-    "github.com/treeforest/smart-page-list"
+    "github.com/treeforest/smartpagelist"
 )
 
 // 初始化区块链状态存储
@@ -38,20 +38,25 @@ if err != nil {
     panic("区块链状态更新失败: " + err.Error())
 }
 
+err := list.PushBack("用户B")
+if err != nil {
+    panic("区块链状态更新失败: " + err.Error())
+}
+
 // 分页查询
 page1, err := list.GetPage(1)
 if err != nil {
     panic("分页查询失败: " + err.Error())
 }
-fmt.Println("第一页数据:", page1) // ["用户A"]
+fmt.Println("第一页数据:", page1) // ["用户A", "用户B"]
 ```
 
 ### 数据遍历示例
 
 ```go
 // 遍历第5-14号元素（索引从0开始）
-err := list.Range(5, 15, func(索引 int, 值 string) error {
-    fmt.Printf("索引 %d: %s\n", 索引, 值)
+err := list.Range(5, 15, func(index int, value string) error {
+    fmt.Printf("索引 %d: %s\n", index, value)
     return nil
 })
 if err != nil {
