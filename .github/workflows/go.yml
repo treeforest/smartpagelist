@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: ['1.18', "1.22"]
+        go: ['1.18', "1.22", "1.23"]
     steps:
       - uses: actions/checkout@v4
 
@@ -35,11 +35,6 @@ jobs:
           go test -v -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
           go tool cover -func=coverage.out
 
-      - name: Upload Coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: coverage.out
-          flags: unittests
-          name: codecov-${{ matrix.go }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+      - name: Run Benchmarks
+        run: |
+          go test -bench=. -benchmem -run=^$ ./...
