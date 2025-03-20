@@ -1,11 +1,15 @@
 package smartpagelist
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // mockStateStore 模拟区块链状态存储
@@ -193,4 +197,223 @@ func TestRange(t *testing.T) {
 			t.Errorf("expected %v, got %v", expected, results)
 		}
 	})
+}
+
+func TestGetOperations(t *testing.T) {
+	// 初始化测试环境
+	store := NewMockStateStore()
+	list := NewList("test_list", 3, store) // 分页大小3
+
+	// 准备测试数据：4个元素，分2页（第1页3元素，第2页1元素）
+	testData := []string{"item1", "item2", "item3", "item4"}
+	for _, item := range testData {
+		if err := list.PushBack(item); err != nil {
+			t.Fatalf("初始化数据失败: %v", err)
+		}
+	}
+
+	t.Run("Get正常用例", func(t *testing.T) {
+		testCases := []struct {
+			name     string
+			index    int
+			expected string
+		}{
+			{"首元素", 0, "item1"},
+			{"第一页末尾", 2, "item3"},
+			{"跨页元素", 3, "item4"},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				result, err := list.Get(tc.index)
+				if err != nil || result != tc.expected {
+					t.Errorf("Get(%d) => (%q, %v), 预期 (%q, nil)",
+						tc.index, result, err, tc.expected)
+				}
+			})
+		}
+	})
+
+	t.Run("Get异常用例", func(t *testing.T) {
+		testCases := []struct {
+			name        string
+			index       int
+			expectedErr error
+		}{
+			{"负数索引", -1, ErrIndexOutOfRange},
+			{"越界索引", 4, ErrIndexOutOfRange},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := list.Get(tc.index)
+				if !errors.Is(err, tc.expectedErr) {
+					t.Errorf("Get(%d) 预期错误 %v, 实际得到 %v",
+						tc.index, tc.expectedErr, err)
+				}
+			})
+		}
+	})
+
+	t.Run("Get数据不一致用例", func(t *testing.T) {
+		// 手动构造损坏数据：第二页标记存在但实际为空
+		corruptStore := NewMockStateStore()
+		corruptList := NewList("corrupt_list", 3, corruptStore)
+
+		// 设置元数据表示有1页3元素
+		corruptMeta := &listMeta{
+			LastPageNumber: 1,
+			TotalCount:     3,
+		}
+		metaData, _ := json.Marshal(corruptMeta)
+		_ = corruptStore.PutState(corruptList.metaKey(), metaData)
+
+		// 实际存储空页数据
+		_ = corruptStore.PutState(corruptList.buildPageKey(1), []byte("[]"))
+
+		// 验证获取索引2时报错
+		_, err := corruptList.Get(2)
+		if err == nil || !strings.Contains(err.Error(), "data inconsistency") {
+			t.Errorf("预期数据不一致错误，实际得到: %v", err)
+		}
+	})
+
+	t.Run("GetLast正常用例", func(t *testing.T) {
+		// 获取最后一个元素
+		last, err := list.GetLast()
+		if err != nil || last != "item4" {
+			t.Errorf("GetLast() => (%q, %v), 预期 ('item4', nil)", last, err)
+		}
+
+		// 添加新元素后验证
+		_ = list.PushBack("item5")
+		last, _ = list.GetLast()
+		if last != "item5" {
+			t.Errorf("GetLast() 更新后预期 'item5', 得到 %q", last)
+		}
+	})
+
+	t.Run("GetLast异常用例", func(t *testing.T) {
+		// 空列表用例
+		emptyList := NewList("empty_list", 3, store)
+		_, err := emptyList.GetLast()
+		if !errors.Is(err, ErrIndexOutOfRange) {
+			t.Errorf("空列表预期 ErrIndexOutOfRange, 实际得到 %v", err)
+		}
+
+		// 构造最后一页为空的情况
+		badMetaStore := NewMockStateStore()
+		badList := NewList("bad_list", 3, badMetaStore)
+
+		// 元数据标记有1页但实际无数据
+		badMeta := &listMeta{
+			LastPageNumber: 1,
+			TotalCount:     1,
+		}
+		metaData, _ := json.Marshal(badMeta)
+		_ = badMetaStore.PutState(badList.metaKey(), metaData)
+
+		// 验证数据损坏检测
+		_, err = badList.GetLast()
+		if err == nil {
+			t.Errorf("预期数据损坏错误，实际得到: %v", err)
+		}
+	})
+}
+
+// 压测参数配置
+const (
+	TotalItems    = 100000 // 总测试数据量
+	SmallPageSize = 10     // 小分页配置
+	LargePageSize = 1000   // 大分页配置
+	SamplePoints  = 100    // 采样点数量
+)
+
+// 初始化测试列表
+func initList(pageSize int) (*List, StateStore) {
+	store := NewMockStateStore()
+	return NewList("perf_test", pageSize, store), store
+}
+
+// ------------------------------ 插入性能测试 ------------------------------
+
+func BenchmarkInsert_SmallPage(b *testing.B) {
+	benchmarkInsert(b, SmallPageSize)
+}
+
+func BenchmarkInsert_LargePage(b *testing.B) {
+	benchmarkInsert(b, LargePageSize)
+}
+
+func benchmarkInsert(b *testing.B, pageSize int) {
+	list, _ := initList(pageSize)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		// 批量插入测试(每次测试迭代插入TotalItems个元素)
+		start := time.Now()
+		for n := 0; n < TotalItems; n++ {
+			_ = list.PushBack(strconv.Itoa(n))
+		}
+		b.ReportMetric(float64(time.Since(start).Milliseconds())/float64(TotalItems), "ms/op")
+	}
+}
+
+// ------------------------------ 查询性能测试 ------------------------------
+
+func BenchmarkQuery_SmallPage(b *testing.B) {
+	benchmarkQuery(b, SmallPageSize)
+}
+
+func BenchmarkQuery_LargePage(b *testing.B) {
+	benchmarkQuery(b, LargePageSize)
+}
+
+func benchmarkQuery(b *testing.B, pageSize int) {
+	list, _ := initList(pageSize)
+	prepareTestData(list, TotalItems)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		// 随机查询不同位置的元素
+		start := time.Now()
+		for n := 0; n < SamplePoints; n++ {
+			index := n * (TotalItems / SamplePoints)
+			_, _ = list.Get(index)
+		}
+		b.ReportMetric(float64(time.Since(start).Milliseconds())/float64(SamplePoints), "ms/op")
+	}
+}
+
+// ------------------------------ 遍历性能测试 ------------------------------
+
+func BenchmarkIterate_SmallPage(b *testing.B) {
+	benchmarkIterate(b, SmallPageSize)
+}
+
+func BenchmarkIterate_LargePage(b *testing.B) {
+	benchmarkIterate(b, LargePageSize)
+}
+
+func benchmarkIterate(b *testing.B, pageSize int) {
+	list, _ := initList(pageSize)
+	prepareTestData(list, TotalItems)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		_ = list.Range(0, -1, func(_ int, _ string) error {
+			return nil
+		})
+		b.ReportMetric(float64(time.Since(start).Milliseconds()), "ms/op")
+	}
+}
+
+// ------------------------------ 工具函数 ------------------------------
+
+// 准备测试数据
+func prepareTestData(list *List, count int) {
+	for i := 0; i < count; i++ {
+		_ = list.PushBack("data-" + strconv.Itoa(i))
+	}
 }

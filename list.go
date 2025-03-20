@@ -219,6 +219,64 @@ func (l *List) Range(start, end int, fn func(index int, value string) error) err
 	return nil
 }
 
+// Get 获取指定索引位置的元素
+//   - index: 元素索引（从0开始）
+//   - 返回: 元素值 或 ErrIndexOutOfRange
+func (l *List) Get(index int) (string, error) {
+	meta, err := l.getMeta()
+	if err != nil {
+		return "", err
+	}
+
+	// 索引有效性检查
+	if index < 0 || index >= meta.TotalCount {
+		return "", ErrIndexOutOfRange
+	}
+
+	// 计算所在页码和页内位置
+	pageNumber := (index / l.pageSize) + 1
+	pageIndex := index % l.pageSize
+
+	// 获取分页数据
+	values, err := l.GetPage(pageNumber)
+	if err != nil {
+		return "", err
+	}
+
+	// 页内索引验证
+	if pageIndex >= len(values) {
+		return "", fmt.Errorf("data inconsistency: page %d has %d elements, request index %d",
+			pageNumber, len(values), pageIndex)
+	}
+
+	return values[pageIndex], nil
+}
+
+// GetLast 获取列表最后一个元素
+//   - 返回: 末尾元素值 或 ErrIndexOutOfRange（空列表时）
+func (l *List) GetLast() (string, error) {
+	meta, err := l.getMeta()
+	if err != nil {
+		return "", err
+	}
+
+	if meta.TotalCount == 0 {
+		return "", ErrIndexOutOfRange
+	}
+
+	// 直接访问最后一页的最后元素（优化性能）
+	lastPage, err := l.GetPage(meta.LastPageNumber)
+	if err != nil {
+		return "", err
+	}
+
+	if len(lastPage) == 0 {
+		return "", fmt.Errorf("data corruption: last page %d is empty", meta.LastPageNumber)
+	}
+
+	return lastPage[len(lastPage)-1], nil
+}
+
 // ------------------------------ 工具方法 ------------------------------
 
 // buildPageKey 生成分页数据存储键（格式: "listKey_page_页码"）
